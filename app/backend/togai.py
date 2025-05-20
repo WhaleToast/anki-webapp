@@ -8,11 +8,9 @@ load_dotenv(dotenv_path=envPath)
 apiKey = os.getenv("togetherAPI")
 
 client = Together(api_key=apiKey)
-stream = client.chat.completions.create(
+res = client.chat.completions.create(
     model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
     messages=[{"role": "user", "content": "Hello"}],
-    stream=True,
 )
 
-for chunk in stream:
-    print(chunk.choices[0].delta.content or "", end="", flush=True)
+print(res.json)
