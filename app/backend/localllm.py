@@ -18,7 +18,7 @@ app.add_middleware(
 
 env_path = Path("../secrets/.env")
 load_dotenv(dotenv_path=env_path)
-api_key = os.getenv("GROQ_API")
+api_key = os.getenv("togetherAPI")
 
 LLM_API_URL = "http://localhost:5000/v1/chat/completions"
 
