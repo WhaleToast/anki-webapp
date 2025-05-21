@@ -4,16 +4,18 @@
 	<head>
 		<meta charset="UTF-8">
 		<title>Shit in shit out</title>
+		<link rel="stylesheet" href="./css/style.css"
 	</head>
 
 	<body>
-		<h1>Enter text to generate response</h1>
-		<textarea id="prompt" rows="6" cols="60" placeholder="Type text here..."></textarea>
-		<button id="generateBtn">Generate</button>
+		<div class="container">
+			<h1>Enter text to generate response</h1>
+			<input type="file" id="pdfInput" accept="pdf">
+			<button id="generateBtn">Generate</button>
 
-		<h2>Result:</h2>
-		<pre id="response"></pre>
-
-		<script src="script.js"></script>
+			<h2>Result:</h2>
+			<div id="response" class="response-box"></div>
+		</div>
+		<script type="module" src="script.js"></script>
 	</body>
 </html>

@@ -177,3 +177,6 @@ cython_debug/
 secrets/
 .env
 venv/
+node_modules/
+package.json
+package-lock.json
