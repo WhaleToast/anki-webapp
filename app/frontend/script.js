@@ -1,7 +1,7 @@
 import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 
 let selectedFile = null;
-let apiUrl = "http://45.148.31.50:9999/" 
+let apiUrl = "http://127.0.0.1:8000/" 
 
 document.addEventListener("DOMContentLoaded", () => {
 	const fileInput = document.getElementById("pdfInput");
@@ -41,21 +41,21 @@ document.addEventListener("DOMContentLoaded", () => {
 	});
 });
 
-async function generate(prompt){
-	const responseBox = document.getElementById("response");
-
-	responseBox.textContent = "Generating...";
-	try {
-		const res = await fetch("http://45.148.31.50:9999/generate", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ prompt: prompt })
-		});
-
-		const data = await res.json();
-		responseBox.innerHTML = marked.parse(data.response);
-	} catch (err) {
-		responseBox.textContent = "Error: " + err;
-	
-	}
-}
+// async function generate(prompt){
+// 	const responseBox = document.getElementById("response");
+//
+// 	responseBox.textContent = "Generating...";
+// 	try {
+// 		const res = await fetch("http://45.148.31.50:9999/generate", {
+// 			method: "POST",
+// 			headers: { "Content-Type": "application/json" },
+// 			body: JSON.stringify({ prompt: prompt })
+// 		});
+//
+// 		const data = await res.json();
+// 		responseBox.innerHTML = marked.parse(data.response);
+// 	} catch (err) {
+// 		responseBox.textContent = "Error: " + err;
+// 	
+// 	}
+// }

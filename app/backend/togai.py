@@ -12,7 +12,6 @@ envPath = Path("../../secrets/.env")
 load_dotenv(dotenv_path=envPath)
 apiKey = os.getenv("togetherAPI")
 
-# last_response = ""
 
 
 app = FastAPI()
@@ -48,7 +47,8 @@ async def upload_pdf(file: UploadFile = File(...)):
     if not pdf_text.strip():
             return{"response": "No readable text found in the PDF."}
     prompt = (
-    "Create 10 unique and high-quality Anki flashcards based on the following content ONLY.\n\n"
+        "Create 10 unique and high-quality Anki flashcards based on the following content ONLY.\n\n"
+        "Write ONLY the flashcard and markdown. Do NOT write any other text.\n\n"
         "Do NOT use any external or prior knowledge. If the provided content does not contain enough information to create five unique flashcards, "
         "reply with exactly this sentence:\n\n"
         "**\"Not enough relevant data to generate flashcards.\"**\n\n"
@@ -57,7 +57,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         "Q: [question]  \n"
         "A: [answer]\n\n"
         "Here is the content:\n"
-        f"{pdf_text[:25000]}"
+        f"{pdf_text[:23000]}"
 )
     response = gen_flashcard(prompt)
     return {"response": response}
