@@ -57,7 +57,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         "Q: [question]  \n"
         "A: [answer]\n\n"
         "Here is the content:\n"
-        f"{pdf_text[:7500]}"
+        f"{pdf_text[:25000]}"
 )
     response = gen_flashcard(prompt)
     return {"response": response}
