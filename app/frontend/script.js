@@ -1,7 +1,7 @@
 import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 
 let selectedFile = null;
-let apiUrl = "http://127.0.0.1:8000/" 
+let apiUrl = "http://45.148.31.50:9999/" 
 
 document.addEventListener("DOMContentLoaded", () => {
 	const fileInput = document.getElementById("pdfInput");
