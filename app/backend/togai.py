@@ -76,8 +76,8 @@ def gen_flashcard(prompt: str) -> str:
     res = client.chat.completions.create(
         model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
         messages=[{"role": "user", "content": prompt}],
-        top_p=0.9,
-        temperature=1.3,
+        top_p=0.95,
+        temperature=1.2,
 
     )
 
