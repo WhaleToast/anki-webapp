@@ -91,28 +91,27 @@ class PromptRequest(BaseModel):
 async def upload_pdf(file: UploadFile = File(...)):
     with pdfplumber.open(file.file) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    if not pdf_text.strip():
+        if not any(c.isalnum() for c in pdf_text):
             return{"response": "No readable text found in the PDF."}
-
-    # raw_chunks = token_safe_chunking(pdf_text, max_tokens=6500)
-    # print(raw_chunks)
-    # chunks = add_token_overlap(raw_chunks, overlap_paragraphs=1)
-
 
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
     all_cards = []
     instruction = (
-    "Create 10 unique and high-quality Anki flashcards based on the following content ONLY.\n\n"
-    "Write ONLY the flashcard and markdown. Do NOT write any other text.\n\n"
-    "Do NOT use any external or prior knowledge. If the provided content does not contain enough information to create five unique flashcards, "
-    "reply with exactly this sentence:\n\n"
-    "**\"Not enough relevant data to generate flashcards.\"**\n\n"
-    "Each card must focus on a distinct, concrete fact or concept explicitly mentioned in the input. Do not invent or assume anything. Add an explanation where applicable, from provided data ONLY.\n\n"
-    "Use the following format for each card, using markdown for readability:\n\n"
-    "Q: [question]  \n"
-    "A: [answer]\n\n"
-    "Here is the content:\n"
-)
+        "Based solely on the content provided below, generate up to 10 high-quality Anki-style flashcards.\n\n"
+        "Each flashcard must:\n"
+        "- Be based only on facts, definitions, or concepts **explicitly stated** in the text.\n"
+        "- Contain **no assumptions** or external knowledge.\n"
+        "- Be phrased clearly and concisely for effective spaced repetition.\n"
+        "- Include brief **explanations or clarifications** if they are present in the source text.\n"
+        "- Be unique — avoid rewording the same idea multiple times.\n\n"
+        "If the content is too limited to generate meaningful flashcards, respond with exactly:\n"
+        "**\"Not enough relevant data to generate flashcards.\"**\n\n"
+        "Use **Markdown format** like this:\n"
+        "Q: [Question]  \n"
+        "A: [Answer]\n\n"
+        "--- Do not include any headings, intro text, or explanations outside of the Q&A format. ---\n\n"
+        "Here is the content:\n"
+    )
 
     instruction_tokens = len(enc.encode(instruction))
     max_total_tokens = 6000
