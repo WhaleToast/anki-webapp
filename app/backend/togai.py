@@ -1,4 +1,6 @@
 import os
+import asyncio
+import time
 import re
 import tiktoken
 from pathlib import Path
@@ -84,8 +86,55 @@ def gen_flashcard(prompt: str) -> str:
     return res.choices[0].message.content
 
 
+
 class PromptRequest(BaseModel):
     prompt: str
+
+async def generate_card_async(chunks, instruction, batch_size=6, delay=60):
+    results = []
+    i = 0
+
+    while i < len(chunks):
+        batch_start_time = time.time()
+        print(f"Starting batch at chunk {i}, time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+
+        # Dispatch up to 6 requests
+        tasks = []
+        for _ in range(batch_size):
+            if i >= len(chunks):
+                break
+            prompt = instruction + chunks[i]
+            task = asyncio.create_task(asyncio.to_thread(gen_flashcard, prompt))
+            tasks.append(task)
+            i += 1
+
+        # Start the delay countdown immediately
+        delay_task = asyncio.create_task(asyncio.sleep(delay))
+
+        # Wait for the delay to finish before starting the next batch
+        await delay_task
+
+        # Collect results from the current batch
+        batch_results = await asyncio.gather(*tasks)
+
+        # Process results
+        for j, result in enumerate(batch_results):
+            if result == "**Rate limit exceeded.**":
+                print(f"Rate limit hit at chunk {i-len(batch_results)+j}, time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+                continue
+            if "**Error:" in result:
+                print(f"Error at chunk {i-len(batch_results)+j}: {result}")
+                continue
+            if '**"Not enough relevant data to generate flashcard."**' not in result.strip():
+                results.append(result.strip())
+
+        # Ensure the next batch starts exactly 60 seconds after the previous batch started
+        elapsed = time.time() - batch_start_time
+        if elapsed < delay:
+            await asyncio.sleep(delay - elapsed)
+
+    print(f"Total chunks processed: {i}")
+    return results
 
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -121,12 +170,14 @@ async def upload_pdf(file: UploadFile = File(...)):
     raw_chunks = token_safe_chunking(pdf_text, max_tokens=max_chunk_tokens)
     chunks = add_token_overlap(raw_chunks, overlap_paragraphs=1)
 
-    for chunk in chunks:
-        prompt = instruction + chunk
+    # for chunk in chunks:
+    #     prompt = instruction + chunk
+    #
+    #     result = gen_flashcard(prompt)
+    #     if '**\"Not enough relevant data to generate flashcards.\"**' not in result:
+    #         all_cards.append(result)
 
-        result = gen_flashcard(prompt)
-        if '**\"Not enough relevant data to generate flashcards.\"**' not in result:
-            all_cards.append(result)
+    all_cards = await generate_card_async(chunks, instruction)
 
     if not all_cards:
         return {"response": "No relevant flashcard could be generated"}
