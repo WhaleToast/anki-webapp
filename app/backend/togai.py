@@ -103,91 +103,89 @@ def gen_flashcard(prompt: str, api_Key: str) -> str:
 
     response = requests.post("https://llm.chutes.ai/v1/chat/completions", headers=headers, json=data)
     response = response.json()
+    print(response)
     return response['choices'][0]['message']['content']
 
 
 class PromptRequest(BaseModel):
     prompt: str
 
-async def generate_card_async(chunks, instruction, max_requests_per_minute=6):
+async def generate_card_async(chunks, instruction, max_requests_per_minute=35, batch_size=10):
     """
-    Process chunks with strict rate limiting.
-    Sends up to max_requests_per_minute requests per minute.
+    Process chunks in batches with strict rate limiting.
+    Sends up to batch_size requests concurrently, respecting max_requests_per_minute.
     """
     results = []
     request_times = []
-
     total_chunks = len(chunks)
-    print(f"Processing {total_chunks} chunks with rate limit of {max_requests_per_minute} requests per minute")
-
-    i = 0
-    while i < total_chunks:
+    
+    print(f"Processing {total_chunks} chunks in batches of {batch_size} with rate limit of {max_requests_per_minute} requests per minute")
+    
+    # Process chunks in batches
+    for batch_start in range(0, total_chunks, batch_size):
+        batch_end = min(batch_start + batch_size, total_chunks)
+        batch_chunks = chunks[batch_start:batch_end]
+        
         current_time = time.time()
-
+        
         # Remove old timestamps beyond the 60-second window
-        valid_times = []
-        for t in request_times:
-            if current_time - t < 60:
-                valid_times.append(t)
-        request_times = valid_times
-
-        # Check if we've hit the rate limit
-        if len(request_times) >= max_requests_per_minute:
-            oldest_request_time = request_times[0]
-            wait_duration = 60 - (current_time - oldest_request_time)
-
-            if wait_duration > 0:
-                print(f"Rate limit reached. Waiting {wait_duration:.1f} seconds... (chunk {i+1}/{total_chunks})")
-                await asyncio.sleep(wait_duration)
-
-                # Recheck the request_times after sleeping
-                current_time = time.time()
-                valid_times = []
-                for t in request_times:
-                    if current_time - t < 60:
-                        valid_times.append(t)
-                request_times = valid_times
-
-        # Compose the prompt
-        current_chunk = chunks[i]
-        prompt = instruction + current_chunk
-
-        print(f"Sending request for chunk {i+1}/{total_chunks} at {datetime.now().strftime('%H:%M:%S')}")
-
-        try:
-            request_times.append(time.time())
-
-            result = await asyncio.to_thread(gen_flashcard, prompt, apiKey)
-
-            if result == "**Rate limit exceeded.**":
-                print(f"Rate limit hit for chunk {i+1}")
-                request_times.pop()
-
-                print("Waiting 60 seconds due to rate limit error...")
-                await asyncio.sleep(60)
-
-                request_times.append(time.time())
-                result = await asyncio.to_thread(gen_flashcard, prompt)
-
-            if "**Error:" in result:
-                print(f"Error for chunk {i+1}: {result}")
-            else:
-                trimmed_result = result.strip()
-                if 'Not enough relevant data to generate flashcards' not in trimmed_result:
-                    results.append(trimmed_result)
-                    print(f"✓ Successfully processed chunk {i+1}")
-                else:
-                    print(f"- Skipped chunk {i+1} (not enough data)")
-
-        except Exception as e:
-            print(f"Exception for chunk {i+1}: {e}")
+        request_times = [t for t in request_times if current_time - t < 60]
+        
+        # Check if we need to wait for rate limit
+        requests_needed = len(batch_chunks)
+        available_slots = max_requests_per_minute - len(request_times)
+        
+        if available_slots < requests_needed:
             if request_times:
-                request_times.pop()
-
-        i += 1
-
+                oldest_request_time = request_times[0]
+                wait_duration = 60 - (current_time - oldest_request_time) + 1  # +1 for safety
+                if wait_duration > 0:
+                    print(f"Rate limit reached. Waiting {wait_duration:.1f} seconds for batch {batch_start//batch_size + 1}")
+                    await asyncio.sleep(wait_duration)
+                    # Refresh request times after waiting
+                    current_time = time.time()
+                    request_times = [t for t in request_times if current_time - t < 60]
+        
+        # Create tasks for the current batch
+        tasks = []
+        for i, chunk in enumerate(batch_chunks):
+            chunk_index = batch_start + i
+            prompt = instruction + chunk
+            task = asyncio.to_thread(gen_flashcard, prompt, apiKey)
+            tasks.append(task)
+        
+        # Record request times for rate limiting
+        batch_request_time = time.time()
+        request_times.extend([batch_request_time] * len(batch_chunks))
+        
+        print(f"Sending batch {batch_start//batch_size + 1} with {len(batch_chunks)} requests at {datetime.now().strftime('%H:%M:%S')}")
+        
+        # Execute batch concurrently
+        try:
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for i, result in enumerate(batch_results):
+                chunk_index = batch_start + i
+                if isinstance(result, Exception):
+                    print(f"Exception for chunk {chunk_index + 1}: {result}")
+                elif result == "**Rate limit exceeded.**":
+                    print(f"Rate limit hit for chunk {chunk_index + 1}")
+                    # Could implement retry logic here
+                elif "**Error:" in str(result):
+                    print(f"Error for chunk {chunk_index + 1}: {result}")
+                else:
+                    trimmed_result = str(result).strip()
+                    if 'Not enough relevant data to generate flashcards' not in trimmed_result:
+                        results.append(trimmed_result)
+                        print(f"✓ Successfully processed chunk {chunk_index + 1}")
+                    else:
+                        print(f"- Skipped chunk {chunk_index + 1} (not enough data)")
+                        
+        except Exception as e:
+            print(f"Batch processing error: {e}")
+    
     print(f"Completed processing. Generated {len(results)} flashcards from {total_chunks} chunks.")
-    print (results)
     return results
 
 @app.post("/upload_pdf")
