@@ -98,7 +98,6 @@ async def generate_card_async(chunks, instruction, batch_size=6, delay=60):
         batch_start_time = time.time()
         print(f"Starting batch at chunk {i}, time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
 
-        # Dispatch up to 6 requests
         tasks = []
         for _ in range(batch_size):
             if i >= len(chunks):
@@ -106,7 +105,9 @@ async def generate_card_async(chunks, instruction, batch_size=6, delay=60):
             prompt = instruction + chunks[i]
             task = asyncio.create_task(asyncio.to_thread(gen_flashcard, prompt))
             tasks.append(task)
+
             i += 1
+            print(i)
 
         # Start the delay countdown immediately
         delay_task = asyncio.create_task(asyncio.sleep(delay))
