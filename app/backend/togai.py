@@ -108,7 +108,7 @@ async def generate_card_async(chunks, instruction, batch_size=6, delay=60):
 
             i += 1
             print(i)
-
+    exit()
         # Start the delay countdown immediately
         delay_task = asyncio.create_task(asyncio.sleep(delay))
 
