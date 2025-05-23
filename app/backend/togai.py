@@ -3,6 +3,7 @@ import asyncio
 import time
 import re
 import tiktoken
+import requests
 from pathlib import Path
 from together import Together
 from dotenv import load_dotenv 
@@ -11,11 +12,12 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import pdfplumber 
 from fastapi import File, UploadFile
+from datetime import datetime
 
 envPath = Path("../../secrets/.env")
 load_dotenv(dotenv_path=envPath)
-apiKey = os.getenv("togetherAPI")
-
+apiKey = os.getenv("chutes")
+chuteModel = "deepseek-ai/DeepSeek-V3-0324"
 
 
 app = FastAPI()
@@ -73,68 +75,119 @@ def add_token_overlap(chunks: list[str], overlap_paragraphs: int = 1, model: str
 
     return result
 
-def gen_flashcard(prompt: str) -> str:
-    client = Together(api_key=apiKey)
-    res = client.chat.completions.create(
-        model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        messages=[{"role": "user", "content": prompt}],
-        top_p=0.9,
-        temperature=1.3,
+def gen_flashcard(prompt: str, api_Key: str) -> str:
+    # client = Together(api_key=apiKey)
+    # res = client.chat.completions.create(
+    #     model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+    #     messages=[{"role": "user", "content": prompt}],
+    #     top_p=0.9,
+    #     temperature=1.3,
+    #
+    # )
 
-    )
+    headers = {
+        "Authorization": f"Bearer {api_Key}",
+        "Content-Type": "application/json"
+    }
 
-    return res.choices[0].message.content
+    data = {
+        "model": chuteModel,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 1.3
+    }
 
+    response = requests.post("https://llm.chutes.ai/v1/chat/completions", headers=headers, json=data)
+    response = response.json()
+    return response['choices'][0]['message']['content']
 
 
 class PromptRequest(BaseModel):
     prompt: str
 
-async def generate_card_async(chunks, instruction, batch_size=6, delay=60):
+async def generate_card_async(chunks, instruction, max_requests_per_minute=6):
+    """
+    Process chunks with strict rate limiting.
+    Sends up to max_requests_per_minute requests per minute.
+    """
     results = []
+    request_times = []
+
+    total_chunks = len(chunks)
+    print(f"Processing {total_chunks} chunks with rate limit of {max_requests_per_minute} requests per minute")
+
     i = 0
+    while i < total_chunks:
+        current_time = time.time()
 
-    while i < len(chunks):
-        batch_start_time = time.time()
-        print(f"Starting batch at chunk {i}, time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+        # Remove old timestamps beyond the 60-second window
+        valid_times = []
+        for t in request_times:
+            if current_time - t < 60:
+                valid_times.append(t)
+        request_times = valid_times
 
-        tasks = []
-        for _ in range(batch_size):
-            if i >= len(chunks):
-                break
-            prompt = instruction + chunks[i]
-            task = asyncio.create_task(asyncio.to_thread(gen_flashcard, prompt))
-            tasks.append(task)
+        # Check if we've hit the rate limit
+        if len(request_times) >= max_requests_per_minute:
+            oldest_request_time = request_times[0]
+            wait_duration = 60 - (current_time - oldest_request_time)
 
-            i += 1
-            print(i)
-    exit()
-        # Start the delay countdown immediately
-        delay_task = asyncio.create_task(asyncio.sleep(delay))
+            if wait_duration > 0:
+                print(f"Rate limit reached. Waiting {wait_duration:.1f} seconds... (chunk {i+1}/{total_chunks})")
+                await asyncio.sleep(wait_duration)
 
-        # Wait for the delay to finish before starting the next batch
-        await delay_task
+                # Recheck the request_times after sleeping
+                current_time = time.time()
+                valid_times = []
+                for t in request_times:
+                    if current_time - t < 60:
+                        valid_times.append(t)
+                request_times = valid_times
 
-        # Collect results from the current batch
-        batch_results = await asyncio.gather(*tasks)
+        # Compose the prompt
+        current_chunk = chunks[i]
+        prompt = instruction + current_chunk
 
-        # Process results
-        for j, result in enumerate(batch_results):
+        print(f"Sending request for chunk {i+1}/{total_chunks} at {datetime.now().strftime('%H:%M:%S')}")
+
+        try:
+            request_times.append(time.time())
+
+            result = await asyncio.to_thread(gen_flashcard, prompt, apiKey)
+
             if result == "**Rate limit exceeded.**":
-                print(f"Rate limit hit at chunk {i-len(batch_results)+j}, time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
-                continue
+                print(f"Rate limit hit for chunk {i+1}")
+                request_times.pop()
+
+                print("Waiting 60 seconds due to rate limit error...")
+                await asyncio.sleep(60)
+
+                request_times.append(time.time())
+                result = await asyncio.to_thread(gen_flashcard, prompt)
+
             if "**Error:" in result:
-                print(f"Error at chunk {i-len(batch_results)+j}: {result}")
-                continue
-            if '**"Not enough relevant data to generate flashcard."**' not in result.strip():
-                results.append(result.strip())
+                print(f"Error for chunk {i+1}: {result}")
+            else:
+                trimmed_result = result.strip()
+                if 'Not enough relevant data to generate flashcards' not in trimmed_result:
+                    results.append(trimmed_result)
+                    print(f"✓ Successfully processed chunk {i+1}")
+                else:
+                    print(f"- Skipped chunk {i+1} (not enough data)")
 
-        # Ensure the next batch starts exactly 60 seconds after the previous batch started
-        elapsed = time.time() - batch_start_time
-        if elapsed < delay:
-            await asyncio.sleep(delay - elapsed)
+        except Exception as e:
+            print(f"Exception for chunk {i+1}: {e}")
+            if request_times:
+                request_times.pop()
 
-    print(f"Total chunks processed: {i}")
+        i += 1
+
+    print(f"Completed processing. Generated {len(results)} flashcards from {total_chunks} chunks.")
+    print (results)
     return results
 
 @app.post("/upload_pdf")
@@ -147,21 +200,20 @@ async def upload_pdf(file: UploadFile = File(...)):
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
     all_cards = []
     instruction = (
-        "Based solely on the content provided below, generate up to 10 high-quality Anki-style flashcards.\n\n"
-        "Each flashcard must:\n"
-        "- Be based only on facts, definitions, or concepts **explicitly stated** in the text.\n"
-        "- Contain **no assumptions** or external knowledge.\n"
-        "- Be phrased clearly and concisely for effective spaced repetition.\n"
-        "- Include brief **explanations or clarifications** if they are present in the source text.\n"
-        "- Be unique — avoid rewording the same idea multiple times.\n\n"
-        "If the content is too limited to generate meaningful flashcards, respond with exactly:\n"
-        "**\"Not enough relevant data to generate flashcards.\"**\n\n"
-        "Use **Markdown format** like this:\n"
-        "Q: [Question]  \n"
-        "A: [Answer]\n\n"
-        "--- Do not include any headings, intro text, or explanations outside of the Q&A format. ---\n\n"
-        "Here is the content:\n"
-    )
+    "You are to act strictly as a flashcard generator.\n\n"
+    "Given the content below, output **only** up to 10 Anki-style flashcards in the exact Markdown format shown.\n\n"
+    "**Output Rules:**\n"
+    "- Do NOT include any introductions, explanations, or summaries.\n"
+    "- Do NOT write anything except the Q&A cards in the specified format.\n"
+    "- Use only information **explicitly** stated in the content.\n"
+    "- If there is not enough information, output exactly:\n"
+    '**"Not enough relevant data to generate flashcards."**\n\n'
+    "**Format (repeat up to 10 times):**\n"
+    "Q: [Question]  \n"
+    "A: [Answer]\n\n"
+    "---\n\n"
+    "CONTENT:\n"
+)
 
     instruction_tokens = len(enc.encode(instruction))
     max_total_tokens = 6000
