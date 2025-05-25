@@ -262,12 +262,12 @@ def parse_flashcards_to_anki(llm_output, my_model, my_deck):
     Args:
         llm_output (str): The raw text output from the LLM
         my_model: The genanki model to use for creating notes
+        my_deck: The genanki deck to use for generating the deck
     
     Returns:
-        list: List of genanki.Note objects
+        Nothing
     """
     
-    # Method 1: Using regular expressions (more robust)
     # This pattern looks for Q: followed by text, then A: followed by text
     pattern = r'Q:\s*(.*?)\s*A:\s*(.*?)(?=Q:|$)'
     matches = re.findall(pattern, llm_output, re.DOTALL | re.IGNORECASE)
