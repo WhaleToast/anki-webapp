@@ -1,4 +1,6 @@
 import os
+import genanki
+import random
 import asyncio
 import time
 import re
@@ -18,7 +20,28 @@ envPath = Path("../../secrets/.env")
 load_dotenv(dotenv_path=envPath)
 apiKey = os.getenv("chutes")
 chuteModel = "deepseek-ai/DeepSeek-V3-0324"
+random_model_id = random.randrange(1 << 30, 1 << 31)
+random_deck_id = random.randrange(1 << 30, 1 << 31)
+anki_model = genanki.Model(
+    random_model_id, 
+    'Simple Model',
+    fields=[
+        {'name': 'Question'},
+        {'name': 'Answer'},
+    ],
+    templates=[
+        {
+            'name': 'Card 1',
+            'qfmt': '{{Question}}',
+            'afmt': '{{FrontSide}}<hr id="answer">{{Answer}}',
+        },
+    ]
+)
 
+
+anki_deck = genanki.Deck(
+    random_deck_id,
+    'Example deck')
 
 app = FastAPI()
 app.add_middleware(
@@ -103,90 +126,168 @@ def gen_flashcard(prompt: str, api_Key: str) -> str:
 
     response = requests.post("https://llm.chutes.ai/v1/chat/completions", headers=headers, json=data)
     response = response.json()
-    print(response)
+    # print(response)
     return response['choices'][0]['message']['content']
 
 
 class PromptRequest(BaseModel):
     prompt: str
 
-async def generate_card_async(chunks, instruction, max_requests_per_minute=35, batch_size=10):
+async def generate_card_async(chunks, instruction, max_requests_per_minute=20, batch_size=10):
     """
     Process chunks in batches with strict rate limiting.
     Sends up to batch_size requests concurrently, respecting max_requests_per_minute.
-    """
-    results = []
-    request_times = []
-    total_chunks = len(chunks)
     
+    Parameters:
+    - chunks: List of text pieces to convert into flashcards
+    - instruction: The prompt/instruction to tell the AI how to make flashcards
+    - max_requests_per_minute: How many API calls we can make per minute (default 35)
+    - batch_size: How many requests to send at the same time (default 10)
+    """
+    
+    # Initialize our storage containers
+    results = []           # Will store all the successful flashcards we generate
+    request_times = []     # Keeps track of when we made each API request (for rate limiting)
+    total_chunks = len(chunks)  # Count how many text chunks we need to process
+    
+    # Tell the user what we're about to do
     print(f"Processing {total_chunks} chunks in batches of {batch_size} with rate limit of {max_requests_per_minute} requests per minute")
     
-    # Process chunks in batches
+    # MAIN LOOP: Process chunks in batches
+    # This loop goes through chunks in groups (batches) instead of one by one
+    # range(start, stop, step) - starts at 0, goes to total_chunks, jumps by batch_size
     for batch_start in range(0, total_chunks, batch_size):
-        batch_end = min(batch_start + batch_size, total_chunks)
-        batch_chunks = chunks[batch_start:batch_end]
         
-        current_time = time.time()
+        # Figure out which chunks belong to this batch
+        batch_end = min(batch_start + batch_size, total_chunks)  # Don't go past the end
+        batch_chunks = chunks[batch_start:batch_end]  # Get the actual chunk data for this batch
         
-        # Remove old timestamps beyond the 60-second window
+        # RATE LIMITING SECTION
+        # We need to make sure we don't send too many requests too quickly
+        current_time = time.time()  # Get current timestamp
+        
+        # Clean up old request timestamps (only keep requests from last 60 seconds)
+        # This is like a "sliding window" - we only care about recent requests
         request_times = [t for t in request_times if current_time - t < 60]
         
-        # Check if we need to wait for rate limit
-        requests_needed = len(batch_chunks)
-        available_slots = max_requests_per_minute - len(request_times)
+        # Check if we have room for more requests within our rate limit
+        requests_needed = len(batch_chunks)  # How many requests this batch will make
+        available_slots = max_requests_per_minute - len(request_times)  # How many slots we have left
         
+        # If we don't have enough available slots, we need to wait
         if available_slots < requests_needed:
-            if request_times:
-                oldest_request_time = request_times[0]
-                wait_duration = 60 - (current_time - oldest_request_time) + 1  # +1 for safety
-                if wait_duration > 0:
+            if request_times:  # If we have previous requests to base timing on
+                oldest_request_time = request_times[0]  # Find the oldest request in our window
+                # Calculate how long to wait until that old request "expires" from our 60-second window
+                wait_duration = 60 - (current_time - oldest_request_time) + 1  # +1 for safety buffer
+                
+                if wait_duration > 0:  # If we actually need to wait
                     print(f"Rate limit reached. Waiting {wait_duration:.1f} seconds for batch {batch_start//batch_size + 1}")
-                    await asyncio.sleep(wait_duration)
-                    # Refresh request times after waiting
+                    await asyncio.sleep(wait_duration)  # Actually pause execution
+                    
+                    # After waiting, update our timing info
                     current_time = time.time()
                     request_times = [t for t in request_times if current_time - t < 60]
         
-        # Create tasks for the current batch
+        # PREPARE THE BATCH OF REQUESTS
+        # Create a list of "tasks" (async operations) for this batch
         tasks = []
         for i, chunk in enumerate(batch_chunks):
-            chunk_index = batch_start + i
-            prompt = instruction + chunk
+            chunk_index = batch_start + i  # Calculate the overall index of this chunk
+            prompt = instruction + chunk   # Combine the instruction with the text chunk
+            # Create an async task that will call gen_flashcard function
             task = asyncio.to_thread(gen_flashcard, prompt, apiKey)
             tasks.append(task)
         
-        # Record request times for rate limiting
+        # Record when we're making these requests (for future rate limiting)
         batch_request_time = time.time()
+        # Add one timestamp for each request in this batch
         request_times.extend([batch_request_time] * len(batch_chunks))
         
+        # Tell user we're sending this batch
         print(f"Sending batch {batch_start//batch_size + 1} with {len(batch_chunks)} requests at {datetime.now().strftime('%H:%M:%S')}")
         
-        # Execute batch concurrently
+        # EXECUTE THE BATCH
+        # Run all tasks in this batch simultaneously and wait for all to complete
         try:
+            # asyncio.gather runs multiple async operations concurrently
+            # return_exceptions=True means if one fails, others keep running
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Process results
+            # PROCESS THE RESULTS
+            # Go through each result and handle different types of responses
             for i, result in enumerate(batch_results):
-                chunk_index = batch_start + i
+                chunk_index = batch_start + i  # Calculate which original chunk this result belongs to
+                
+                # Handle different types of results:
+                
                 if isinstance(result, Exception):
+                    # Something went wrong with this specific request
                     print(f"Exception for chunk {chunk_index + 1}: {result}")
-                elif result == "**Rate limit exceeded.**":
+                    
+                elif "Too many requests" in str(result):
+                    # The API told us we hit the rate limit
                     print(f"Rate limit hit for chunk {chunk_index + 1}")
-                    # Could implement retry logic here
+                    # Could implement retry logic here if needed
+                    
                 elif "**Error:" in str(result):
+                    # The API returned some other kind of error
                     print(f"Error for chunk {chunk_index + 1}: {result}")
+                    
                 else:
-                    trimmed_result = str(result).strip()
+                    # This looks like a successful result!
+                    trimmed_result = str(result).strip()  # Remove extra whitespace
+                    
+                    # Check if the result is actually useful
                     if 'Not enough relevant data to generate flashcards' not in trimmed_result:
+                        # Good result - add it to our collection
                         results.append(trimmed_result)
                         print(f"✓ Successfully processed chunk {chunk_index + 1}")
                     else:
+                        # The AI said this chunk didn't have enough good content
                         print(f"- Skipped chunk {chunk_index + 1} (not enough data)")
                         
         except Exception as e:
+            # If something went wrong with the entire batch
             print(f"Batch processing error: {e}")
     
+    # ALL DONE!
     print(f"Completed processing. Generated {len(results)} flashcards from {total_chunks} chunks.")
-    return results
+    return results  # Return all the successfully generated flashcards    
+ 
+def parse_flashcards_to_anki(llm_output, my_model, my_deck):
+    """
+    Parse LLM output containing Q: and A: pairs and convert to Anki notes.
+    
+    Args:
+        llm_output (str): The raw text output from the LLM
+        my_model: The genanki model to use for creating notes
+    
+    Returns:
+        list: List of genanki.Note objects
+    """
+    
+    # Method 1: Using regular expressions (more robust)
+    # This pattern looks for Q: followed by text, then A: followed by text
+    pattern = r'Q:\s*(.*?)\s*A:\s*(.*?)(?=Q:|$)'
+    matches = re.findall(pattern, llm_output, re.DOTALL | re.IGNORECASE)
+    
+    for question, answer in matches:
+        # Clean up the text (remove extra whitespace and newlines)
+        question = question.strip().replace('\n', ' ')
+        answer = answer.strip().replace('\n', ' ')
+        
+        # Skip empty questions or answers
+        if question and answer:
+            note = genanki.Note(
+                model=my_model,
+                fields=[question, answer]
+            )
+            my_deck.add_note(note)
+
+    genanki.Package(my_deck).write_to_file('test.apkg')
+
+    return
 
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -233,8 +334,14 @@ async def upload_pdf(file: UploadFile = File(...)):
     if not all_cards:
         return {"response": "No relevant flashcard could be generated"}
 
-    return {"response": "\n\n".join(all_cards)}
+    # return {"response": "\n\n".join(all_cards)}
+    response = "\n\n".join(all_cards)
+    
+    parse_flashcards_to_anki(response, anki_model, anki_deck)
+    
+    print(response)
 
+    return {"response": response}
 @app.post("/generate")
 def generate_anki_cards(data: PromptRequest):
     response = gen_flashcard(data.prompt)
