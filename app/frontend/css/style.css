@@ -51,6 +51,9 @@ button {
   transition: background-color 0.3s ease;
   padding-top: 10px;
 }
+#downloadBtn {
+   margin-top: 20px;
+}
 
 button:hover {
   background-color: #0056b3;
@@ -63,7 +66,8 @@ h3 {
 
 .response-box {
   width: 100%;
-  min-height: 150px;
+  min-height: 50px;
+  margin-top: 5px;
   padding: 12px;
   border: 1px solid #ccc;
   border-radius: 8px;
@@ -71,5 +75,6 @@ h3 {
   overflow-y: auto;
   white-space: pre-wrap;
   font-size: 14px;
+  margin-top: 15px;
 }
 

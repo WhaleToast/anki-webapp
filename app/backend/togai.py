@@ -1,3 +1,4 @@
+from logging import exception
 import os
 import genanki
 import random
@@ -9,9 +10,10 @@ import requests
 from pathlib import Path
 from together import Together
 from dotenv import load_dotenv 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel 
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import pdfplumber 
 from fastapi import File, UploadFile
 from datetime import datetime
@@ -20,28 +22,8 @@ envPath = Path("../../secrets/.env")
 load_dotenv(dotenv_path=envPath)
 apiKey = os.getenv("chutes")
 chuteModel = "deepseek-ai/DeepSeek-V3-0324"
-random_model_id = random.randrange(1 << 30, 1 << 31)
-random_deck_id = random.randrange(1 << 30, 1 << 31)
-anki_model = genanki.Model(
-    random_model_id, 
-    'Simple Model',
-    fields=[
-        {'name': 'Question'},
-        {'name': 'Answer'},
-    ],
-    templates=[
-        {
-            'name': 'Card 1',
-            'qfmt': '{{Question}}',
-            'afmt': '{{FrontSide}}<hr id="answer">{{Answer}}',
-        },
-    ]
-)
+global_max_tokens = 19000
 
-
-anki_deck = genanki.Deck(
-    random_deck_id,
-    'Example deck')
 
 app = FastAPI()
 app.add_middleware(
@@ -53,10 +35,10 @@ app.add_middleware(
 def split_paragraphs(text:str) -> list[str]:
     return [p.strip() for p in re.split(r'\n{2,}|\n(?=\S)', text) if p.strip()]
 
-def token_safe_chunking(text: str, max_tokens: int = 6500, model: str = "gpt-3.5-turbo") -> list[str]:
+def token_safe_chunking(text: str, max_tokens: int = global_max_tokens, model: str = "gpt-3.5-turbo") -> list[str]:
     enc = tiktoken.encoding_for_model(model)
     paragraphs = split_paragraphs(text)    
-
+    print(max_tokens)
     chunks = []
     current_chunk = []
     current_tokens = 0 
@@ -78,7 +60,7 @@ def token_safe_chunking(text: str, max_tokens: int = 6500, model: str = "gpt-3.5
     
     return chunks
 
-def add_token_overlap(chunks: list[str], overlap_paragraphs: int = 1, model: str = "gpt-3.5-turbo", max_tokens: int = 6500):
+def add_token_overlap(chunks: list[str], overlap_paragraphs: int = 1, model: str = "gpt-3.5-turbo", max_tokens: int = global_max_tokens):
     enc = tiktoken.encoding_for_model(model)
     result = []
 
@@ -235,6 +217,7 @@ async def generate_card_async(chunks, instruction, max_requests_per_minute=20, b
                     print(f"Error for chunk {chunk_index + 1}: {result}")
                     
                 else:
+                    print(result)
                     # This looks like a successful result!
                     trimmed_result = str(result).strip()  # Remove extra whitespace
                     
@@ -255,7 +238,7 @@ async def generate_card_async(chunks, instruction, max_requests_per_minute=20, b
     print(f"Completed processing. Generated {len(results)} flashcards from {total_chunks} chunks.")
     return results  # Return all the successfully generated flashcards    
  
-def parse_flashcards_to_anki(llm_output, my_model, my_deck):
+def parse_flashcards_to_anki(llm_output, my_model, my_deck, deck_id):
     """
     Parse LLM output containing Q: and A: pairs and convert to Anki notes.
     
@@ -267,7 +250,6 @@ def parse_flashcards_to_anki(llm_output, my_model, my_deck):
     Returns:
         Nothing
     """
-    
     # This pattern looks for Q: followed by text, then A: followed by text
     pattern = r'Q:\s*(.*?)\s*A:\s*(.*?)(?=Q:|$)'
     matches = re.findall(pattern, llm_output, re.DOTALL | re.IGNORECASE)
@@ -276,21 +258,81 @@ def parse_flashcards_to_anki(llm_output, my_model, my_deck):
         # Clean up the text (remove extra whitespace and newlines)
         question = question.strip().replace('\n', ' ')
         answer = answer.strip().replace('\n', ' ')
-        
+        if not question or not answer:
+            continue
+        if question.lower() == answer.lower():
+            print(f"Skipped duplicate Q&A: {question}")
+            continue
+
+        # non_ascii_ratio = sum(1 for c in answer if ord(c) > 127) / len(answer)
+        # if non_ascii_ratio > 0.3: #More than 30%
+        #     print(f"Skipped garbled answer for: {question} {answer}")
+
+        error_patterns = [
+            "Please wait",
+            "Sorry令",
+            "Recently deleted",
+            "研究表明",  # Chinese characters when not expected
+            "μηδὲν",     # Greek characters when not expected
+        ]
+
+        if any(pattern in answer for pattern in error_patterns):
+            print(f"Skipped error-containing answer for: {question} {answer}")
+            continue
+
+
         # Skip empty questions or answers
-        if question and answer:
-            note = genanki.Note(
-                model=my_model,
-                fields=[question, answer]
-            )
-            my_deck.add_note(note)
+        note = genanki.Note(
+            model=my_model,
+            fields=[question, answer]
+        )
+        my_deck.add_note(note)
 
-    genanki.Package(my_deck).write_to_file('test.apkg')
+    os.makedirs("decks", exist_ok=True)
+    filename = f"decks/{deck_id}.apkg"
+    genanki.Package(my_deck).write_to_file(filename)
 
-    return
+    return filename
 
+@app.get("/api/download-deck/{deck_id}")
+async def download_deck(deck_id: str):
+    try:
+        deck_path = Path("../backend/decks") / f"{deck_id}.apkg"
+
+        if not deck_path.exists():
+            raise HTTPException(status_code=404, detail="Deck not found")
+
+        return FileResponse(
+            path=deck_path,
+            filename=f"{deck_id}.apkg",
+            media_type="application/octet-stream"
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Download failed")
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
+    random_model_id = random.randrange(1 << 30, 1 << 31)
+    random_deck_id = random.randrange(1 << 30, 1 << 31)
+    anki_deck = genanki.Deck(
+        random_deck_id,
+        f'Deck_{random_deck_id}') 
+    anki_model = genanki.Model(
+        random_model_id, 
+        'Simple Model',
+        fields=[
+            {'name': 'Question'},
+            {'name': 'Answer'},
+        ],
+        templates=[
+            {
+                'name': 'Card 1',
+                'qfmt': '{{Question}}',
+                'afmt': '{{FrontSide}}<hr id="answer">{{Answer}}',
+            },
+        ]
+    )
+
     with pdfplumber.open(file.file) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         if not any(c.isalnum() for c in pdf_text):
@@ -299,24 +341,41 @@ async def upload_pdf(file: UploadFile = File(...)):
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
     all_cards = []
     instruction = (
-    "You are to act strictly as a flashcard generator.\n\n"
-    "Given the content below, output **only** up to 10 Anki-style flashcards in the exact Markdown format shown.\n\n"
-    "**Output Rules:**\n"
-    "- Do NOT include any introductions, explanations, or summaries.\n"
-    "- Do NOT write anything except the Q&A cards in the specified format.\n"
-    "- Use only information **explicitly** stated in the content.\n"
-    "- If there is not enough information, output exactly:\n"
-    '**"Not enough relevant data to generate flashcards."**\n\n'
-    "**Format (repeat up to 10 times):**\n"
-    "Q: [Question]  \n"
-    "A: [Answer]\n\n"
-    "---\n\n"
-    "CONTENT:\n"
-)
+        "You are an expert flashcard generator that adapts to any type of content.\n\n"
+        "TASK: Generate up to 20 high-quality flashcards from the content below.\n\n"
+        "CORE PRINCIPLES:\n"
+        "- Create questions that promote active recall and retention\n"
+        "- Focus on information that learners need to retrieve quickly\n"
+        "- One clear concept per flashcard\n"
+        "- Concise but complete answers\n"
+        "- Adapt question style to match the content type\n\n"
+        "AUTO-ADAPT TO CONTENT TYPE:\n"
+        "- If Academic/Technical: Focus on definitions, processes, relationships, applications\n"
+        "- If Language Content: Focus on vocabulary, grammar, usage, translations\n"
+        "- If Historical/Factual: Focus on events, people, dates, causes, effects\n"
+        "- If Procedural: Focus on steps, methods, when/how to apply\n"
+        "- If Conceptual: Focus on understanding, comparisons, principles\n\n"
+        "STRICT OUTPUT RULES:\n"
+        "- Output ONLY the flashcards in the exact format shown below\n"
+        "- No introductions, explanations, summaries, or extra text\n"
+        "- Use only information explicitly stated in the content\n"
+        "- Skip trivial or overly obvious information\n"
+        "- Prioritize frequently needed information over obscure details\n"
+        "- Do NOT use markdown for formatting in any way, shape or form. Use ONLY plain text\n"
+        "- If insufficient quality content, output exactly: 'Not enough relevant data to generate flashcards.'\n\n"
+        "REQUIRED FORMAT:\n"
+        "Q: [Clear, specific question]\n"
+        "A: [Concise, complete answer]\n\n"
+        "Q: [Clear, specific question]\n"
+        "A: [Concise, complete answer]\n\n"
+        "[Continue for up to 20 cards]\n\n"
+        "---\n\n"
+        "CONTENT:\n"
+    )
 
     instruction_tokens = len(enc.encode(instruction))
-    max_total_tokens = 6000
-    max_output_tokens = 1024
+    max_total_tokens = global_max_tokens
+    max_output_tokens = 2042
     max_chunk_tokens = max_total_tokens - instruction_tokens - max_output_tokens
 
     raw_chunks = token_safe_chunking(pdf_text, max_tokens=max_chunk_tokens)
@@ -337,11 +396,14 @@ async def upload_pdf(file: UploadFile = File(...)):
     # return {"response": "\n\n".join(all_cards)}
     response = "\n\n".join(all_cards)
     
-    parse_flashcards_to_anki(response, anki_model, anki_deck)
+    parse_flashcards_to_anki(response, anki_model, anki_deck, random_deck_id)
     
-    print(response)
 
-    return {"response": response}
+    return {
+        "response": response,
+        "deck_id": str(random_deck_id)
+    }
+
 @app.post("/generate")
 def generate_anki_cards(data: PromptRequest):
     response = gen_flashcard(data.prompt)

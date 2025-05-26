@@ -9,11 +9,14 @@
 
 	<body>
 		<div class="container">
-			<h1>Enter text to generate response</h1>
+			<h1>Giv pdf</h1>
 			<input type="file" id="pdfInput" accept="pdf">
 			<button id="generateBtn">Generate</button>
 
-			<h2>Result:</h2>
+			<!-- <h2>Result:</h2> -->
+			<button id="downloadBtn" class="your-button-class" style="display: none;">
+			Download Anki Deck
+	</button>
 			<div id="response" class="response-box"></div>
 		</div>
 		<script type="module" src="./script.js"></script>
